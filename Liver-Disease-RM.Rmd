@@ -1,0 +1,779 @@
+---
+title: "Predicting Liver Disease in an Indian Sub-Population"
+author: "Simon Piper"
+date: "07/05/2020"
+output: 
+  pdf_document:
+    latex_engine: pdflatex
+---
+
+```{r setup, include=FALSE}
+.packages = c("tidyverse", "dplyr", "caret", "reshape2", "gmodels", "expss", "gridExtra",
+              "pROC", "ggthemes", "ROCR", "earth", "caretEnsemble", "caTools")
+
+# Install CRAN packages (if not already installed)
+.inst <- .packages %in% installed.packages()
+if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst])
+
+# Load packages into session 
+lapply(.packages, require, character.only=TRUE)
+
+#download data
+url <- "https://raw.githubusercontent.com/PiperS52/Liver-Disease-ML/master/indian_liver_patient.csv"
+rawdata <- read.csv(url)
+```
+
+## Introduction
+
+#### Overview
+
+Liver disease is a major cause of mortality in both the developed and developing regions of the world, accounting for approximately two million deaths globally each year. Obesity and diabetes are considered risk factors, while other common causes of liver disease include chronic hepatitis B and C and alcohol. In India, prevalence of liver disease has been increasing with the rise of excessive alcohol consumption, as well as an increase in harmful gases and contaminated food. This burden of disease places increasing pressure on healthcare systems and healthcare professionals to intervene before the condition has too far advanced.
+
+This report uses a data set containing 583 patient records from North East of Andhra Pradesh, India, in seeking to develop a prediction algorithmn to identify whether an individual has liver disease or not. The original data set contains the following variables:
+
+- ***Age***: The age of the individual, with those older than 89 listed as age 90.
+- ***Gender***: Either Male of Female
+- ***Total_Bilirubin***: Bilirubin is a yellow pigment found in the body's normal catabolic pathway, produced as a waste product from the breakdown of heme. This measure is derived from a liver function test, where high levels may be indicative of liver disease. It is measured in mg/dL.
+- ***Direct_Bilirubin***: Also known as conjugated bilirubin. It is a water-soluble form of bilirubin. It is measured in mg/dL.
+- ***Alkaline_Phosphatase*** (ALP): An enzyme found in various forms in the body involved in lipid transposition as well as calcification of bones, with high amounts found in both bone and liver. Elevated ALP levels may indicate liver or bone disorders. It is measured in U/L.
+- ***Alamine_Aminotransferase*** (ALT): Found mainly in the liver, raised levels can be due to liver damage or inflammation, and such a test can be used as an early detection of liver disease. It is measured in U/L.
+- ***Aspartate_Aminotransferase*** (AST): Found in a wider range of organs including the liver, brain, kidneys, heart and muscles, making it a relatively weaker indicator of liver disease compared to ALT. Alongside other tests it can be useful in detecting liver disease. It is measured in U/L.
+- ***Total_Proteins***: This measures the total amount of albumin and globulin in the blood. It is measured in g/dL.
+- ***Albumin***: A protein made specifically by the liver which functions to prevent fluid from leaking out of blood vessels. It is the main consituent of total protein, making up approximately 50%. Low levels of albumin can be indicative of liver disease. It is measured in g/dL.
+- ***Albumin_and_Globulin_Ratio***: Comparing the amount of albumin to globulin, where globulin is considered the other main constituent of total protein. Globulin is produced in the liver by the immune system, and plays an important role in liver function, blood clotting and fighting infection. Low levels of globulin can be a sign of liver disease. It is measured in g/dL.
+- ***Dataset***: A class label used to divide the individuals into those with liver disease ('1'), and those without ('2').
+
+The model performance and degree to which it can correctly classify whether a patient has liver disease or not, will be measured according to several metrics which can be drawn from the following confusion matrix:
+
+```{r, echo=FALSE, results='asis', fig.hold='hold', out.width="50%", message=FALSE}
+cm.table <- structure(c("True Positive (TP)", "False Negative (FN)", "False Positive (FP)", 
+                        "True Negative (TN)"), dim = c(2,2), dimnames=structure(list(Predicted=c("Positive", "Negative"),                               Actual=c("Positive","Negative"))),                     rownames="Predicted",colnames="Actual", class="table")
+
+library(kableExtra)
+knitr::kable(cm.table) %>% kable_styling(c("striped", "bordered")) %>% add_header_above(c("","Actual"=2), bold = TRUE) %>% pack_rows("Predicted",1,2, bold = TRUE)
+```
+
+Such metrics include:
+
+* **Accuracy**: The proportion of observations which are classified correctly. It is not robust when there is class imbalance.
+
+\[
+  Accuracy = \frac{TP + TN}{TP + TN + FP + FN}
+\]
+
+* **Recall**: The proportion of actual positive outcomes correctly identified. Also known as the true positive rate (TPR) or sensitivity.
+
+\[
+  Recall = \frac{TP}{TP + FN}
+\]
+
+* **Specificity**: The proportion of actual negative outcomes correctly identified. Also known as the true negative rate (TNR).
+
+\[
+  Specificity = \frac{TN}{N}
+\]
+
+* **Precision**: The total number of correctly classified positive outcomes out of all positive predictions.  
+
+\[
+  Precision = \frac{TP}{TP + FP}
+\]
+
+* **F1**: A harmonic mean of precision and recall.
+\[
+  F1 = \frac{2 * Precision * Recall}{Precision + Recall}
+\]
+
+* **Matthew's Correlation Coefficient (MCC)**: A correlation coefficient between the observed and predicted classifications. It takes into account true and false positives and negatives, and regarded as a balanced measure when classes are of different frequencies.
+
+  + MCC = 1 represents perfect positive correlation - the classifier is perfect (\(FP = FN = 0\))
+  + MCC = 0 represent no correlation - the classifier randomly classifies
+  + MCC = -1 represents perfect negative correlation - the classifier always missclassifies (\(TP = TN = 0\))
+
+\[
+  MCC = \frac{(TP*TN)-(FP*FN)}{\sqrt{(TP+FP)(TP+FN)(TN+FP)(TN+FN)}}
+\]
+
+* **ROC & AUC**: The receiver operating characteristic curve (ROC) is a graph of TPR vs FPR showing the performance of a classification model at different threshold values. Where \(0\leq threshold\leq1\) and \(p\) is the probability that a patient has liver disease, then they are classified as having the disease if \(p > threshold\). The 'Area Under the ROC Curve' (**AUC**), provides a very useful aggregate measure of the performance model across all possible classification thresholds. AUC ranges between 0 and 1, where a model with an excellent measure of separability has an AUC of 1, and 0.5 being equivalent to random classification. 
+
+## Method & Analysis
+
+#### Data Wrangling
+
+Columns are first renamed and response variable altered for data manipulation purposes:
+
+```{r, rename, include=TRUE}
+rawdata <- rawdata %>% rename(TB = Total_Bilirubin, DB = Direct_Bilirubin, 
+                              ALP = Alkaline_Phosphotase, 
+                              ALT = Alamine_Aminotransferase, 
+                              AST = Aspartate_Aminotransferase,
+                   TP = Total_Protiens, A = Albumin, 
+                   AG_Ratio = Albumin_and_Globulin_Ratio,
+                   Disease = Dataset)
+
+rawdata$Disease <- replace(rawdata$Disease, rawdata$Disease==2, "No")
+rawdata$Disease <- replace(rawdata$Disease, rawdata$Disease==1, "Yes")
+```
+
+*Male* is created as a dummy variable for modelling purposes, taking the value 1 where male and 0 if female:
+
+```{r, male, include=TRUE}
+rawdata$Male <- as.character(rawdata$Gender)
+rawdata$Male <- replace(rawdata$Male, rawdata$Male == "Male", 1)
+rawdata$Male <- replace(rawdata$Male, rawdata$Male =="Female", 0)
+rawdata$Male <- as.numeric(rawdata$Male)
+```
+
+The data is then checked for the presence of any missing values:
+
+```{r, echo=TRUE}
+colSums(is.na(rawdata))
+```
+
+The relevant rows are identified in the *AG_Ratio* column and missing values are replaced with mean values. As the data set is relatively small, this method of adjustment is preferred over removal of entire rows:
+
+```{r, echo=TRUE}
+which(is.na(rawdata$AG_Ratio))
+rawdata$AG_Ratio <- replace(rawdata$AG_Ratio, rawdata$AG_Ratio=="", NA)
+rawdata$AG_Ratio <- as.numeric(rawdata$AG_Ratio)
+
+mean(rawdata$AG_Ratio, na.rm = TRUE)
+rawdata$AG_Ratio[is.na(rawdata$AG_Ratio)] <- 
+  mean(rawdata$AG_Ratio, na.rm = TRUE)
+```
+
+The predictor variables are then assessed for multicollinearity, to ensure that there is no strong correlation between variables as this would lead to inflated standard errors and overfitting, and therefore affecting performance of the machine learning model:
+
+```{r, pearson corr, eval=TRUE, include=FALSE}
+cor_dat <- rawdata %>% select(Age, TB, DB, ALP, ALT, AST, TP, A, AG_Ratio)
+cormat <- round(cor(cor_dat),2)
+cormat
+library(reshape2)
+melted_cormat <- melt(cormat)
+melted_cormat
+library(ggplot2)
+ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+upper_tri <- get_upper_tri(cormat)
+upper_tri
+# Melt the correlation matrix
+library(reshape2)
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Heatmap
+library(ggplot2)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1))+
+  coord_fixed()
+
+reorder_cormat <- function(cormat){
+  # Use correlation between variables as distance
+  dd <- as.dist((1-cormat)/2)
+  hc <- hclust(dd)
+  cormat <-cormat[hc$order, hc$order]
+}
+
+# Reorder the correlation matrix
+cormat <- reorder_cormat(cormat)
+upper_tri <- get_upper_tri(cormat)
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1))+
+  coord_fixed()
+# Print the heatmap
+print(ggheatmap)
+```
+
+```{r, echo=FALSE}
+ggheatmap + 
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    legend.justification = c(1, 0),
+    legend.position = c(0.6, 0.7),
+    legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                               title.position = "top", title.hjust = 0.5))
+```
+
+
+Pearson's correlation coefficient is a statistical measure to assess if a linear relationship exists between any two variables, where \(-1\leq r\leq1\) and \(0.6\leq r\) indicates 'strong' positive correlation.
+
+As perhaps expected, there is strong correlation between *TB* and *DB*, and so a new variable *DB_TB* is created representing the DB/TB ratio.
+
+Furthermore, *A* appears strongly correlated with *AG_Ratio*, and so *G* is calculated and created as a separate variable:
+
+```{r, include=TRUE}
+rawdata <- rawdata %>% mutate(DB_TB = DB / TB, G = A / AG_Ratio)
+```
+
+Correlation can then be checked between *A*, *G* and *TP*:
+
+```{r, echo=FALSE}
+library(knitr)
+cor_dat <- rawdata %>% select(A, TP, G)
+cormat <- round(cor(cor_dat),2)
+cormat
+```
+
+As *A* is strongly correlated with *TP* but not *G*, and *TP* is largely composed of albumin and globulin, *TP* can be dropped (in addition to *TB*,*DB* and *AG_Ratio*).
+
+*AST* and *ALT* show strong correlation, however, there is concern that combining them to form an AST/ALT ratio results in a feature of much reduced significance, while omitting entirely would weaken the predictive power of the subsequent model. Thus, they are left as separate predictors.
+
+```{r, echo=FALSE}
+rawdata <- rawdata %>% select(-TP,-TB,-DB,-AG_Ratio)
+```
+
+
+#### Exploratory Data Analysis
+
+```{r, echo=FALSE, fig.align='left', fig.dim=c(15,15)}
+plot1 <- rawdata %>% ggplot(aes(Age, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = Age), alpha = 0.2, stat = "density")
+plot2 <- rawdata %>% ggplot(aes(DB_TB, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = DB_TB), alpha = 0.2, stat = "density")
+plot3 <- rawdata %>% ggplot(aes(ALP, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = ALP), alpha = 0.2, stat = "density")
+plot4 <- rawdata %>% ggplot(aes(ALT, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = ALT), alpha = 0.2, stat = "density")
+plot5 <- rawdata %>% ggplot(aes(AST, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = AST), alpha = 0.2, stat = "density")
+plot6 <- rawdata %>% ggplot(aes(A, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = A), alpha = 0.2, stat = "density")
+plot7 <- rawdata %>% ggplot(aes(G, fill = Disease, group = Disease)) + 
+  geom_density(aes(x = G), alpha = 0.2, stat = "density")
+grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, plot7, ncol = 2)
+```
+
+Density plots seem to display a slightly higher average age for patients with liver disease compared to those without. They also show lower albumin (*A*) levels on average for those with liver disease relative to those without. The plots for *ALT, AST, ALP* and *DB_TB* show a significantly skewed distribution, characteristic of outliers. These can be further analysed with boxplots:
+
+```{r, echo=FALSE, fig.dim=c(10,15)}
+plot8 <- rawdata %>% ggplot(aes(x = Disease, y = Age, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot9 <- rawdata %>% ggplot(aes(x = Disease, y = DB_TB, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot10 <- rawdata %>% ggplot(aes(x = Disease, y = ALP, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot11 <- rawdata %>% ggplot(aes(x = Disease, y = ALT, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot12 <- rawdata %>% ggplot(aes(x = Disease, y = AST, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot13 <- rawdata %>% ggplot(aes(x = Disease, y = A, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+plot14 <- rawdata %>% ggplot(aes(x = Disease, y = G, fill = Disease, group = Disease)) + 
+  geom_boxplot(aes(x = Disease), stat = "boxplot", position = "dodge2", show.legend = FALSE) 
+
+grid.arrange(plot8, plot9, plot10, plot11, plot12, plot13, plot14, ncol = 2)
+```
+
+As *ALP*, *ALT* and *AST* have a higher proportion of outliers compared to the other features, these are handled using log transformation during modelling.
+
+The following plot illustrates the level of imbalance which exists in the data, not just between males and females, but more significantly between patients with liver disease and those without:
+
+
+```{r, imbalance, echo=FALSE, fig.hold='hold', out.width="50%"}
+plot_gen<- rawdata %>% ggplot(aes(x = Disease, fill = Gender, group = Gender)) + 
+  geom_bar(aes(x = Disease), stat = "count", position = "stack", show.legend = TRUE) +
+  geom_text(stat="count", aes(label=..count..), position=position_stack(vjust=0.2), 
+            colour = "white",vjust=-1)
+plot_gen
+
+table <- table(rawdata$Gender, rawdata$Disease, dnn=list("Gender", "Disease"))
+library(gmodels)
+CrossTable(table, expected = FALSE, prop.r = TRUE, prop.c = TRUE, prop.t = FALSE, 
+           chisq = FALSE, prop.chisq = FALSE, fisher = FALSE, mcnemar = FALSE,
+           resid = FALSE, sresid = FALSE, aresid = FALSE)
+```
+
+In order to develop the model and conduct the analysis, the data set is split into a training set and test set. Only the training set is used for tuning, with predictions and analysis made against the test set. Best practice would be to create another validation set reserved for analysis only with the final model, however the small sample size of the data set makes this unnecessary.
+
+```{r, data split, echo=TRUE, warning=FALSE, message=FALSE}
+set.seed(755, sample.kind = "Rounding")
+test_index <- createDataPartition(y = rawdata$Disease, times = 1, p = 0.2, list = FALSE)
+train_set <- rawdata[-test_index,]
+test_set <- rawdata[test_index,]
+```
+
+As class imbalance can have a negative impact on model fitting, subsampling can be applied to the training data set in order to avoid any such issues. Using a smaller data set, up-sampling is preferred to down-sampling, whereby the minority class is randomly sampled (with replacement) in order that it is the same size as the majority class:
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+'%ni%' <- Negate('%in%')
+options(scipen = 999)
+set.seed(100, sample.kind ="Rounding")
+up_train <- upSample(x = train_set[, colnames(train_set) %ni% "Class"], 
+                     y = factor(train_set$Disease))
+```
+
+The following plot illustrates the class balance for each gender following upsampling:
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+plot_gen <- up_train %>% ggplot(aes(x = Disease, fill = Gender, group = Gender)) + 
+  geom_bar(aes(x = Disease), stat = "count", position = "stack", show.legend = TRUE) +
+  geom_text(stat="count", aes(label=..count..), position=position_stack(vjust=0.2), 
+            colour = "white",vjust=-2)
+plot_gen
+
+up_train <- up_train %>% select(-Gender)
+up_train$Disease <- as.factor(up_train$Disease)
+test_set$Disease <- as.factor(test_set$Disease)
+```
+
+The up-sampled training data set is then structured as follows:
+
+```{r, echo=TRUE}
+str(up_train)
+```
+
+
+#### Model 1 - Logistic Regression
+
+A logistic regression is a binary response model which contrains the conditional probability, \(Pr(Y = 1| X = x)\), to between 0 and 1. It uses Maximum Liklihood Estimation (MLE), making use of the logistic transformation:
+
+\[
+  G(p) = \log\frac{p}{1-p} 
+\]
+
+
+whereby the conditional probability that a patient has liver disease can be modelled with:
+
+\[
+  Pr(Y = 1|X = x) = G(\beta_0 + \beta_1x_1 + ... + \beta_kx_k) = G(\beta_0 + x\beta),
+\]
+
+where \(G\) is a function taking on values strictly between zero and one: \(0 < G(z) < 1\), for all real numbers \(z\).
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(1, sample.kind = "Rounding")
+fit_glm <- glm(Disease ~ Age + A + G + DB_TB + log(ALP) + log(ALT) + log(AST) + Male, 
+               family = "binomial", data = up_train)
+summary(fit_glm)
+```
+
+An advantage of the logistic model is it's interpretability, where for example each additional year to a patient's age corresponds to a 0.018 increase in the log odds of disease. Additionally, an increase in one unit of log ALT is associated with a 0.645 increase in the log odds of disease.
+
+Each of the coefficient estimates shows statistical significance to at least the 5% level, except for that of *A* and *Male*. However, as theory and evidence strongly suggests that each of these parameters holds clinical significance in predicting liver disease, and there is concern that their omission could mean misspecification of the model, they are included in subsequent models within this anlaysis. 
+
+The *caret* package can then be used to perform k-fold cross validation with the training set, where it is split into *k = 5* non-overlapping sets. The average MSE can then be calculated across *k* sets, after calculating for each, in selecting the optimal parameters which minimise the MSE. K-fold cross validation (*k = 5*) is used across all subsequent models.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+ctrl_glm <- trainControl(method = "cv", number = 5)
+up_train$Disease <- as.factor(up_train$Disease)
+set.seed(1, sample.kind = "Rounding")
+fit_glmk <- train(Disease ~ Age + A + G + DB_TB + Male + log(ALP) + log(ALT) + log(AST), 
+                  method = "glm", family = "binomial", data = up_train,
+                  trControl = ctrl_glm)
+```
+
+The ROC can then be plotted and AUC calculated:
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+pred <- predict(fit_glmk, newdata = test_set, type = "prob") 
+pred <- prediction(pred[,2], factor(test_set$Disease, levels = c("No", "Yes"), ordered = TRUE))
+
+# ROC/AUC plot
+perf1 <- performance(pred, "tpr", "fpr") # ROC plot
+ruc.plot <- plot(perf1, colorize = TRUE, main="ROC and AUC", ylab="Sensitivity", xlab="1 - Specificity",
+     lwd=4)
+abline(a=0, b=1, lty = 4)
+# calc AUC
+auc1 <- performance(pred, "auc")
+auc1 <- unlist(slot(auc1, "y.values"))
+auc1 <- round(auc1, 4)
+legend(.6, .3, auc1, title = "AUC", cex = 1.25, bty = "n")
+
+# MCC
+perf2 <- performance(pred, "mat") # MCC value
+rec.plot <- plot(perf2, col = "black", main="Matthew's Correlation Coefficient", ylab="MCC", xlab="Threshold",
+                 lwd=2)
+max <- which.max(slot(perf2, "y.values")[[1]])
+mcc1 <- slot(perf2, "y.values")[[1]][max]
+mcc1 <- round(mcc1, 4)
+legend(.5, .2, mcc1, title = "MCC", cex = 1.25, bty = "n")
+```
+
+The ROC curve displays the tradeoff between the true positive rate (sensitivity) and false positive rate (1 - specificity) for different probability thresholds, showing its diagnostic ability. ROC curves which approach closer to the top-left corner indicate better performance, being able to correctly classify a positive outcome - in this case a patient with disease. A perfect classifier is able to discriminate between those with and without disease with 100% sensitivity and 100% specificity, characterised by an ROC curve which moves through (0,1).
+
+The diagonal line indicates a random classifier, while any ROC curve below this would indicate performance worse than a random classifier. In order to compare performance of different classifiers, a common metric is to measure the area under the ROC curve - the AUC.
+
+While accuracy is a useful metric in measuring the proportion of correct classifications, it is for a single threshold value. The ROC curve however, considers all thresholds and can be considered more informative to a certain extent. 
+
+The confusion matrix can then be calculated after making predictions against the test set, where \(p > 0.5\) classifies a patient as having liver disease:
+
+```{r, echo=TRUE}
+y_hat_glmk <- predict(fit_glmk, newdata = test_set)
+cm_glmk <-confusionMatrix(data = factor(y_hat_glmk), reference = factor(test_set$Disease), 
+                positive = "Yes", mode="everything")
+cm_glmk
+```
+
+Interestingly, the results show that a logistic regression, perhaps considered a baseline algorithmn, has a higher specificity (0.8529) than sensitivity (0.7143), meaning it is better at detecting negative outcomes or those without disease than those with. Given the up-sampling performed on the training data set to create balanced classes of patients with and without disease, the accuracy measure of 0.7542 can be considered a valid metric for inference.
+
+```{r, echo=FALSE}
+cm_glmk_tab <- as.matrix(cm_glmk, what = "classes")
+```
+
+
+#### Model 2 - K-Nearest Neighbours (kNN)
+
+The K-Nearest Neighbours algorithmn exploits the distance or proximity of similar data points, where for any object \((x_1, x_2)\), \(p(x_1, x_2)\) can be estimated using the *k* nearest points and taking an average of the 0's and 1's associated. Large values of *k* can potentially result in over-smoothing, while a very low value of *k* tends to lead to over-training. Therefore, *k* can be selected to maximise accuracy:
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+ctrl_k <- trainControl(method = "cv", number = 5) 
+set.seed(1, sample.kind = "Rounding")
+fit_knn <- train(Disease ~ Age + A + G + DB_TB + Male + log(ALP) + log(ALT) + log(AST), 
+                  method = "knn", data = up_train, tuneGrid = data.frame(k = seq(3,21,2)),
+                 trControl = ctrl_k) 
+fit_knn$bestTune
+```
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+plot(fit_knn)
+varImp(fit_knn)
+```
+
+While the tuning parameter which maximises accuracy is where k = 3, variable importance can then also be calculated, evaluating how frequently a predictor is used. This shows that the predictor making the greatest contribution to the model is *AST*, while the dummy variable *Male* has a (scaled) value of 0.
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+pred <- predict(fit_knn, newdata = test_set, type = "prob") 
+pred <- prediction(pred[,2], factor(test_set$Disease, levels = c("No", "Yes"), ordered = TRUE))
+
+# ROC/AUC plot
+perf1 <- performance(pred, "tpr", "fpr") # ROC plot
+ruc.plot <- plot(perf1, colorize = TRUE, main="ROC and AUC", ylab="Sensitivity", xlab="1 - Specificity", lwd=4)
+abline(a=0, b=1, lty = 4)
+# calc AUC
+auc2 <- performance(pred, "auc")
+auc2 <- unlist(slot(auc2, "y.values"))
+auc2 <- round(auc2, 4)
+legend(.6, .3, auc2, title = "AUC", cex = 1.25, bty = "n")
+
+# MCC
+perf2 <- performance(pred, "mat") # MCC value
+rec.plot <- plot(perf2, col = "black", main="Matthew's Correlation Coefficient", ylab="MCC", xlab="Threshold",
+                 lwd=2)
+max <- which.max(slot(perf2, "y.values")[[1]])
+mcc2 <- slot(perf2, "y.values")[[1]][max]
+mcc2 <- round(mcc2, 4)
+legend(.6, .34, mcc2, title = "MCC", cex = 1.25, bty = "n")
+```
+
+Both AUC and MCC values are lower than that of the logistic regression, while the maximal MCC (0.3625) appears to lie at a much lower threshold value approaching 0.25.
+
+```{r, echo=TRUE}
+y_hat_knn <- predict(fit_knn, newdata = test_set)
+cm_knn <-confusionMatrix(data = factor(y_hat_knn), reference = factor(test_set$Disease), 
+                          positive = "Yes", mode="everything")
+cm_knn
+```
+
+For a threshold value of 0.5, the confusion matrix reveals lower metrics in every respect relative to the initial logistic regression, revealing a slightly weaker classifier.
+
+```{r, echo=FALSE}
+cm_knn_tab <- as.matrix(cm_knn, what = "classes")
+```
+
+#### Model 3 - Random Forest
+
+Random forest models improve prediction performance and stability by averaging multiple decision trees. Classification trees generate many predictors, with a final prediction then based on the average prediction of all trees.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+ctrl_rf <- trainControl(method = "cv", number = 5)
+set.seed(1, sample.kind = "Rounding")
+fit_rf <- train(Disease ~ Age + A + G + DB_TB + Male + log(ALP) + log(ALT) + log(AST), 
+                  method = "rf", data = up_train, trControl = ctrl_rf,
+                tuneGrid = data.frame(mtry = seq(1,7,1)))
+fit_rf$bestTune
+```
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+plot(fit_rf)
+varImp(fit_rf)
+```
+
+Tuning is optimised where mtry = 6, and similar to the previous model, the parameters with the highest variable importance are *log(ALP), log(ALT), log(AST)* and *DB_TB*.
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+pred <- predict(fit_rf, newdata = test_set, type = "prob") 
+pred <- prediction(pred[,2], factor(test_set$Disease, levels = c("No", "Yes"), ordered = TRUE))
+
+# ROC/AUC plot
+perf1 <- performance(pred, "tpr", "fpr") # ROC plot
+ruc.plot <- plot(perf1, colorize = TRUE, main="ROC and AUC", ylab="Sensitivity", xlab="1 - Specificity", lwd=4)
+abline(a=0, b=1, lty = 4)
+# calc AUC
+auc3 <- performance(pred, "auc")
+auc3 <- unlist(slot(auc3, "y.values"))
+auc3 <- round(auc3, 4)
+legend(.6, .3, auc3, title = "AUC", cex = 1.25, bty = "n")
+
+# MCC
+perf2 <- performance(pred, "mat") # MCC value
+rec.plot <- plot(perf2, col = "black", main="Matthew's Correlation Coefficient", ylab="MCC", xlab="Threshold", lwd=2)
+max <- which.max(slot(perf2, "y.values")[[1]])
+mcc3 <- slot(perf2, "y.values")[[1]][max]
+mcc3 <- round(mcc3, 4)
+legend(.5, .2, mcc3, title = "MCC", cex = 1.25, bty = "n")
+```
+
+```{r, echo=TRUE}
+y_hat_rf <- predict(fit_rf, newdata = test_set)
+cm_rf <- confusionMatrix(data = factor(y_hat_rf), reference = factor(test_set$Disease), 
+                           positive = "Yes", mode="everything")
+cm_rf
+```
+
+The random forest model shows very high sensitivity/recall (0.8452) relative to the previous two models, although this seems to come at the expense of a much reduced specificity (0.4706). Further confirming its ability to better classify positive outcomes, the random forest model also yields a higher F1 value of 0.8202, as a harmonic mean of recall and precision.
+
+```{r, echo=FALSE}
+cm_rf_tab <- as.matrix(cm_rf, what = "classes")
+```
+
+
+#### Model 4 - Earth
+
+Utilising the *earth* package, a multivariate adaptive regression splines (MARS) model is estimated. This is considered an extended non-parametric regression with a greater level of flexibility, automatically identifying any non-linearities in the data in order to maximise predictive accuracy.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+ctrl_e <- trainControl(method = "cv", number = 5)
+set.seed(1, sample.kind = "Rounding")
+fit_e <- train(Disease ~ Age + A + G + DB_TB + Male + log(ALP) + log(ALT) + log(AST), 
+                method = "earth", data = up_train, trControl = ctrl_e, 
+               tuneGrid = expand.grid(.degree=1, .nprune=(1:10)*2))
+
+fit_e$bestTune
+```
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+plot(fit_e)
+varImp(fit_e)
+```
+
+Similar to the random forest model, the variable of greatest (scaled) importance is *log(ALP)*, while in addition to *Male*, *log(AST)* and *A* also have a value of 0.
+
+```{r, echo=FALSE, fig.hold='hold', out.width="50%"}
+# graphs
+pred <- predict(fit_e, newdata = test_set, type = "prob") 
+pred <- prediction(pred[,2], factor(test_set$Disease, levels = c("No", "Yes"), ordered = TRUE))
+
+# ROC/AUC plot
+perf1 <- performance(pred, "tpr", "fpr") # ROC plot
+ruc.plot <- plot(perf1, colorize = TRUE, main="ROC and AUC", ylab="Sensitivity", xlab="1 - Specificity", lwd=4)
+abline(a=0, b=1, lty = 4)
+# calc AUC
+auc4 <- performance(pred, "auc")
+auc4 <- unlist(slot(auc4, "y.values"))
+auc4 <- round(auc4, 4)
+legend(.6, .3, auc4, title = "AUC", cex = 1.25, bty = "n") # AUC = 0.8022
+
+# MCC
+perf2 <- performance(pred, "mat") # MCC value
+rec.plot <- plot(perf2, col = "black", main="Matthew's Correlation Coefficient", ylab="MCC", xlab="Threshold",
+                 lwd=2)
+max <- which.max(slot(perf2, "y.values")[[1]])
+mcc4 <- slot(perf2, "y.values")[[1]][max]
+mcc4 <- round(mcc4, 4)
+legend(.5, .2, mcc4, title = "MCC", cex = 1.25, bty = "n") # mcc = 0.5155
+```
+
+The earth model shows the highest AUC (0.8022) compared to the other three previous models, indicating a stronger classifier across different probability threshold values.
+
+```{r, echo=TRUE}
+y_hat_e <- predict(fit_e, newdata = test_set)
+cm_e <- confusionMatrix(data = factor(y_hat_e), reference = factor(test_set$Disease), 
+                         positive = "Yes", mode="everything")
+
+cm_e
+```
+
+```{r, echo=FALSE}
+cm_e_tab <- as.matrix(cm_e, what = "classes")
+```
+
+
+#### Model 5 - Ensemble (Final Model)
+
+In order to further improve performance, machine learning algorithmns can be combined to form an ensemble, or meta-model, with an optimal predictive accuracy, better capturing the underlying distribution of the data. The *caretEnsemble* package is used to create a simple robust linear blend of two models, where tuning parameters are selected which maximise accuracy. As in previous models, k-fold cross validation is performed (*k = 5*):
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+ctrl_en <- trainControl(method = "cv", number = 5, savePredictions = "final", 
+                        classProbs = TRUE)
+models <- c("knn", "earth")
+set.seed(1, sample.kind = "Rounding")
+fit_en <- caretList(Disease ~ Age + A + G + DB_TB + Male + log(ALP) + log(ALT) + log(AST), 
+                    data = up_train, methodList = models,
+                    trControl = ctrl_en) 
+                    
+stackControl <- trainControl(method = "cv", number = 5, classProbs = TRUE, 
+                             summaryFunction = twoClassSummary)
+greedy_ensemble <- caretEnsemble(fit_en, trControl = stackControl, metric="ROC")
+greedy_ensemble$models
+varImp(greedy_ensemble)
+```
+
+Evaluating variable importance shows *DB_TB* to be the predictor most frequently used while both *Male* and *log(AST)* have a (scaled) value of 0.
+
+The kNN and earth algorithmns are selected for the ensemble as they both have low-moderate correlation compared to the other models. Lower correlation between the predictions of the ensembled models is important in increasing the error-correcting capability of the ensemble, effectively combining the different 'skills' in forming a stronger model:
+
+```{r, echo=TRUE}
+modelCor(resamples(fit_en))
+```
+
+```{r, echo=FALSE}
+pred <- lapply(fit_en, predict, newdata = test_set, type = "prob")
+pred <- lapply(pred, function(x) x[,"Yes"])
+pred <- data.frame(pred)
+ens_preds <- predict(greedy_ensemble, newdata = test_set, type = "prob")
+pred$ensemble <- ens_preds
+```
+
+The AUC can then be reported comparing each model alongside the combined ensemble:
+
+```{r, echo=TRUE}
+caTools::colAUC(pred, test_set$Disease)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.hold='hold', out.width="50%"}
+p <- as.data.frame(pred$ensemble)
+colnames(p)[colnames(p) == 'pred$ensemble'] <- 'Yes'
+p <- p %>% mutate(No = 1-Yes)
+
+pred <- prediction(p[,2], factor(test_set$Disease, levels = c("No", "Yes"), ordered = TRUE))
+
+# ROC/AUC plot
+perf1 <- performance(pred, "tpr", "fpr") # ROC plot
+ruc.plot <- plot(perf1, colorize = TRUE, main="ROC and AUC", ylab="Sensitivity", xlab="1 - Specificity", lwd=4)
+abline(a=0, b=1, lty = 4)
+# calc AUC
+auc5 <- performance(pred, "auc")
+auc5 <- unlist(slot(auc5, "y.values"))
+auc5 <- round(auc5, 4)
+legend(.6, .3, auc5, title = "AUC", cex = 1.25, bty = "n")
+# MCC
+perf2 <- performance(pred, "mat") # MCC value
+mcc.plot <- plot(perf2, col = "black", xlab="Threshold",
+                 lwd=2)
+max <- which.max(slot(perf2, "y.values")[[1]])
+mcc5 <- slot(perf2, "y.values")[[1]][max]
+mcc5 <- round(mcc5, 4)
+legend(.5, .2, mcc5, title = "MCC", cex = 1.25, bty = "n")
+```
+
+The graphs shows an increased AUC (0.8603) and MCC (0.5722) of the ensemble relative to the previous individual classifiers.
+
+```{r, eval=TRUE, include=FALSE, warning=FALSE, message=FALSE}
+perf3 <- performance(pred, "prec") # accuracy for diff threshold values
+prec.plot <- plot(perf3, col = "blue", xlab="Threshold",
+                 lwd=2)
+# Recall
+perf4 <- performance(pred, "rec") # accuracy for diff threshold values
+rec.plot <- plot(perf4, col = "red", xlab="Threshold",
+                 lwd=2)
+# F1
+perf5 <- performance(pred, "f") # accuracy for diff threshold values
+f1.plot <- plot(perf5, col = "green", xlab="Threshold",
+                 lwd=2)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.hold='hold', out.width="100%"}
+plot(perf2, ylab="", col=1, lty=2, xlim=c(0,1), ylim=c(0,1), lwd=3)
+plot(perf3, col=2, lty=3, lwd=3, add=TRUE)
+plot(perf4, col=3, lty=4, lwd=3, add=TRUE)
+plot(perf5, col=4, lty=5, lwd=3, add=TRUE)
+legend(.8,.95,legend=c("MCC","Precision","Recall","F1"), col=c("black","blue","red","green"), lty = 2:3, lwd=2, cex=0.7)
+```
+
+The graph displays the precision, recall, F1 and MCC for different probabilistic threshold values. If the same weight of importance is given to precision as recall in classifying a patient, then the intersection implies a better threshold value would be one at ~0.4, where MCC also appears to be maximised. In this case, if \(p > 0.4\) then the patient would be classified as having liver disease.
+
+As with previous models, a confusion matrix can be created assuming a threshold value of 0.5 forming predictions against the test set: 
+
+```{r, echo=TRUE}
+y_hat_ensemble <- predict(greedy_ensemble, newdata = test_set)
+cm_ensemble <- confusionMatrix(data = factor(y_hat_ensemble), 
+                               reference = factor(test_set$Disease), 
+                               positive = "Yes", mode="everything")
+cm_ensemble
+```
+
+The values for key metrics within the confusion matrix are either the same or greater than the previous individual earth model, indicating an improved predictive algorithmn.
+
+```{r, echo=FALSE}
+cm_ensemble_tab <- as.matrix(cm_ensemble, what = "classes")
+```
+
+
+## Results
+
+The below table displays a summary of the results with corresponding metrics for each of the different models tested:
+
+```{r, CM results, echo=FALSE, results='asis'}
+results <- cbind("Logistic" = cm_glmk_tab, "kNN" = cm_knn_tab, "RF" = cm_rf_tab, "Earth" =
+                   cm_e_tab, "Ensemble" = cm_ensemble_tab)
+colnames(results) <- c("Logistic", "kNN", "Random Forest", "Earth", "Ensemble")
+
+auc.mcc <- matrix(c(auc1,auc2,auc3,auc4,auc5,mcc1,mcc2,mcc3,mcc4,mcc5), ncol = 5, byrow = TRUE)
+rownames(auc.mcc) <- c("AUC", "MCC")
+colnames(auc.mcc) <- c("Logistic", "kNN", "Random Forest", "Earth", "Ensemble")
+auc.mcc <- as.table(auc.mcc)
+merged.results <- rbind(auc.mcc, results)
+
+knitr::kable(merged.results)
+
+```
+
+
+Considering the individual classifiers, the logistic regression reveals a higher accuracy (0.7542), specificity (0.8529) and precision (0.9231), although this comes with a slightly lower relative sensitivity (0.7143). If measuring only on sensitivity, then the random forest  model shows the greatest ability to correctly classify actual positive outcomes with a value of 0.8452. Combining kNN and earth models to form an ensemble shows the highest measure concerning AUC (0.8603), MCC (0.5722), as well as accuracy (0.7542), demonstrating an improved classifier relative to both individual models. 
+
+## Conclusion
+
+The objective of this report is to develop an effective machine learning model to predict liver disease. A data set from an Indian sub-population of both patients with and without the disease is used, containing a number of predictive features. The data is first prepared for analysis, to then be partitioned into both training and test sets, where tuning parameters can be selected using the training set and predictions then made against the separate test set. The performance of each model can then be assessed using a number of different metrics derived from the confusion matrix.
+
+With the purpose of detecting disease in a patient population, of greater concern is being able to identify those with the disease, an actual positive outcome in this setting, compared to those without the disease, an actual negative outcome. If patients are misdiagnosed, they will go untreated, which poses the greater risk compared to falsely diagnosing a healthy individual. Considered a rather more informative measure, evaluating classification performance concerning true positive rate (TPR) versus false positive rate (FPR) for different probabilistic thresholds, the highest AUC value (0.8603) was given when combining kNN and earth models to create an ensemble. In addition, the ensemble delivered the highest MMC value (0.5722), which is regarded a robust metric, taking into account true and false positives and negatives. Regarding sensitivity, the ensemble is only inferior to the random forest model, however this model performs too poorly when attempting to classify negative outcomes. As misdiagnosing a healthy individual still carries a significant cost to the healthcare system in treating a healthy patient, overall accuracy and specificity are still of concern. In this instance, the ensemble displays the (joint) highest accuracy (0.7542), and a specificity which is only inferior to the logistic regression (0.7941).
+
+Furthermore, the final ensemble model reveals that if the same weight of importance is given to recall and precision, their intersection together with the F1 curve, implies an optimal cutoff ~0.4 as opposed to the default of 0.5. It is at this lower cutoff where MCC also appears to be maximised. In this case, if \(p > 0.4\) then the algorithmn would predict liver disease in a patient. Intuitively, lowering the threshold increases the liklihood of capturing more positive outcomes, that is patients with disease, although not too far as to incur the greater cost of increased false positives. 
+
+Interpretation of coefficient estimates from the logistic regression as well as variable importance measures of subsequent models, delivered insights as to the strength of particular predictive features. Within this analysis, *Male* seemed to carry no predictive power of whether a patient had liver disease, while *log(AST)* (aspartate aminotransferase) also had a (scaled) variable importance value of 0 in the final ensemble model.
+
+While this report presents interesting findings, handling a relatively small sub-population sample of individuals may pose a limitation on any insights drawn. Although considered a valid technique, the use of up-sampling to address class imbalance in the original data set by randomly sampling the minority class, can pose a risk of over-fitting the model. This up-sampling method however, is only applied to the training set to prevent any 'leakage' to the test set, and any downside can be considered outweighed by the risk of a biased classifier from class imbalance in the original data set (71.4% liver disease, 28.6% healthy). 
+
+With the burden of chronic illnesses such as liver disease only increasing at a global level, developing a predictive algorithmn to identify patients requiring treatment is of increasing significance. A model such as this, using mostly clinical blood test results has a wide degree of application and allows for extension to other areas of work in a clinical setting. 
+Further models could be developed using blood or enzyme markers, to predict for example organ failure or the onset of various different cancers. Given the available data, such predictive features could be used to facilitate early intervention in correctly diagnosing patients with disease, while also alleviating the strain on healthcare systems.
+
+## References
+
+1. Asrani, S.K. et al. 'Burden of Liver Diseases in the World'. *Journal of Hepatology*. 2019, 70(1), pp.151-171.
+
+2. Krishnan, S. 'Liver Diseases - An Overview'. *World Journal of Pharmacy and Pharmaceutical Sciences*. 2019, 8(1), pp.1385-1395.
